@@ -25,6 +25,7 @@ DEMO_SCRIPT.pdf
 PPT_BRIEF.md
 UI_POLISH_PLAN.md
 *.deb
+data/evals/compass_golden_v1.json
 data/docs/*
 !data/docs/.gitkeep
 *.pem

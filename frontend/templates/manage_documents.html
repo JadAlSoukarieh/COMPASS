@@ -1,0 +1,264 @@
+{% extends "base.html" %}
+{% set active_nav = "documents" %}
+{% set page_heading = "Manage Documents" %}
+{% block content %}
+<div class="container" x-data="manageDocumentsPage()" x-init="init()" x-cloak>
+  <h1 class="page-title">Manage Documents</h1>
+  <p class="page-subtitle">Upload policies and how-to guides, watch async ingestion progress, and retry failed jobs.</p>
+
+  <!-- Upload panel (collapsible) -->
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Upload a document</h2>
+      <span class="collapsible-toggle" @click="showUpload = !showUpload"
+            x-text="showUpload ? 'Hide' : 'Show'"></span>
+    </div>
+
+    <form class="upload-form" @submit.prevent="upload()" x-show="showUpload" x-collapse>
+      <div class="grid two">
+        <div class="field">
+          <label for="doc_code">Document code</label>
+          <input id="doc_code" type="text" x-model="form.docCode" placeholder="POL-LEAVE-2026" required />
+        </div>
+        <div class="field">
+          <label for="doc_type">Document type</label>
+          <select id="doc_type" x-model="form.docType">
+            <option value="policy">Policy</option>
+            <option value="howto">How-to</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="title">Title</label>
+        <input id="title" type="text" x-model="form.title" placeholder="Employee Leave Policy" required />
+      </div>
+
+      <div class="field">
+        <label for="upload_file">File</label>
+        <input id="upload_file" type="file" @change="setFile($event)" accept=".pdf,.docx,.xlsx,.csv" required />
+        <p class="help-text">Accepted: PDF, DOCX, XLSX, CSV. Max 10 MB.</p>
+      </div>
+
+      <template x-if="error">
+        <div class="error-banner" x-text="error"></div>
+      </template>
+      <template x-if="success">
+        <div class="success-banner" x-text="success"></div>
+      </template>
+
+      <button class="btn amber" type="submit" :disabled="uploading || !canSubmit()">
+        <span x-text="uploading ? 'Uploading…' : 'Upload document'"></span>
+      </button>
+    </form>
+  </div>
+
+  <!-- Documents table -->
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Corpus documents</h2>
+      <button class="btn ghost sm" type="button" @click="loadDocuments()" :disabled="loadingList">
+        <span x-text="loadingList ? 'Refreshing…' : 'Refresh'"></span>
+      </button>
+    </div>
+
+    <template x-if="loadingList && !documents.length">
+      <div class="state"><div class="spinner"></div><div>Loading documents…</div></div>
+    </template>
+
+    <template x-if="!loadingList && !documents.length">
+      <div class="state">No uploaded documents yet. Upload one above to build the corpus.</div>
+    </template>
+
+    <template x-if="documents.length">
+      <div class="table-wrap">
+        <table class="data">
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Title</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th class="num">Chunks</th>
+              <th>Uploaded</th>
+              <th class="actions">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="doc in documents" :key="doc.id">
+              <tr>
+                <td><span class="pill" x-text="doc.doc_code"></span></td>
+                <td>
+                  <div class="cell-title" x-text="doc.title"></div>
+                  <template x-if="doc.error_message">
+                    <div class="error-inline" x-text="doc.error_message"></div>
+                  </template>
+                </td>
+                <td><span class="cell-sub" x-text="doc.doc_type"></span></td>
+                <td>
+                  <span class="badge" :class="doc.embedding_status">
+                    <span class="dot"></span>
+                    <span x-text="statusLabel(doc.embedding_status)"></span>
+                  </span>
+                </td>
+                <td class="num" x-text="doc.chunk_count ?? '—'"></td>
+                <td><span class="cell-sub" x-text="formatTs(doc.uploaded_at)"></span></td>
+                <td class="actions">
+                  <button class="btn ghost sm" type="button" @click="reembed(doc)" :disabled="isBusy(doc.embedding_status)">
+                    <span x-text="doc.embedding_status === 'failed' ? 'Retry' : 'Re-embed'"></span>
+                  </button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script>
+  function manageDocumentsPage() {
+    return {
+      form: { docCode: "", title: "", docType: "policy", file: null },
+      documents: [],
+      showUpload: true,
+      loadingList: false,
+      uploading: false,
+      pollingHandle: null,
+      error: "",
+      success: "",
+
+      init() {
+        Compass.requireAuth();
+        if (!Compass.canManageDocuments()) {
+          window.location.href = "/search";
+          return;
+        }
+        this.loadDocuments();
+        this.pollingHandle = window.setInterval(() => this.pollStatuses(), 3000);
+      },
+
+      canSubmit() {
+        return this.form.docCode.trim() && this.form.title.trim() && this.form.file;
+      },
+
+      setFile(event) {
+        this.form.file = event.target.files && event.target.files[0] ? event.target.files[0] : null;
+      },
+
+      clearMessages() {
+        this.error = "";
+        this.success = "";
+      },
+
+      statusLabel(status) {
+        return { pending: "Pending", processing: "Processing", ready: "Ready", failed: "Failed" }[status] || status;
+      },
+
+      isBusy(status) {
+        return status === "pending" || status === "processing";
+      },
+
+      formatTs(value) {
+        if (!value) return "—";
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+      },
+
+      async loadDocuments() {
+        this.loadingList = true;
+        try {
+          const res = await Compass.api("/documents");
+          if (!res.ok) {
+            this.error = res.status === 403 ? "Only HR and superusers can manage documents." : "Could not load documents.";
+            this.documents = [];
+            return;
+          }
+          this.documents = await res.json();
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.loadingList = false;
+        }
+      },
+
+      async upload() {
+        if (!this.canSubmit()) return;
+        this.clearMessages();
+        this.uploading = true;
+        try {
+          const body = new FormData();
+          body.append("doc_code", this.form.docCode.trim());
+          body.append("title", this.form.title.trim());
+          body.append("doc_type", this.form.docType);
+          body.append("file", this.form.file);
+
+          const res = await Compass.api("/documents", { method: "POST", body });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            this.error = this.apiError(res.status, data.detail);
+            return;
+          }
+          this.success = `Queued document #${data.document_id} for ingestion.`;
+          this.form = { docCode: "", title: "", docType: "policy", file: null };
+          const fileInput = document.getElementById("upload_file");
+          if (fileInput) fileInput.value = "";
+          await this.loadDocuments();
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.uploading = false;
+        }
+      },
+
+      async reembed(doc) {
+        this.clearMessages();
+        try {
+          const res = await Compass.api(`/documents/${doc.id}/reembed`, { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            this.error = this.apiError(res.status, data.detail);
+            return;
+          }
+          this.success = `Queued ${doc.doc_code} for re-embedding.`;
+          doc.embedding_status = "pending";
+          doc.error_message = null;
+          doc.chunk_count = null;
+          doc.processed_at = null;
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        }
+      },
+
+      async pollStatuses() {
+        const active = this.documents.filter(doc => this.isBusy(doc.embedding_status));
+        for (const doc of active) {
+          try {
+            const res = await Compass.api(`/documents/${doc.id}/status`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            doc.embedding_status = data.embedding_status;
+            doc.chunk_count = data.chunk_count;
+            doc.error_message = data.error_message;
+            if (data.embedding_status === "ready" || data.embedding_status === "failed") {
+              await this.loadDocuments();
+            }
+          } catch (e) {
+            return;
+          }
+        }
+      },
+
+      apiError(status, detail) {
+        if (status === 400) return detail || "Upload validation failed.";
+        if (status === 403) return "Only HR and superusers can manage documents.";
+        if (status === 409) return detail || "That document code already exists.";
+        if (status === 413) return "The file exceeds the upload size limit.";
+        if (status === 422) return detail || "Please complete every required field.";
+        return "Request failed. Please try again.";
+      },
+    };
+  }
+</script>
+{% endblock %}

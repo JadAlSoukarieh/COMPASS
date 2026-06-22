@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=69.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compass"
+version = "0.1.0"
+description = "Compass internal assistant scaffold"
+readme = "specs/001-compass/quickstart.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic==1.14.0",
+    "bcrypt==4.0.1",
+    "boto3==1.35.99",
+    "fastapi==0.115.6",
+    "greenlet==3.1.1",
+    "hvac==2.3.0",
+    "jinja2==3.1.5",
+    "markdown-it-py==3.0.0",
+    "openai==1.58.1",
+    "openpyxl==3.1.5",
+    "pandas==2.2.3",
+    "passlib[bcrypt]==1.7.4",
+    "pdfplumber==0.11.5",
+    "pgvector==0.3.6",
+    "psycopg[binary]==3.2.3",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "pytesseract==0.3.13",
+    "python-docx==1.1.2",
+    "python-jose[cryptography]==3.3.0",
+    "python-multipart==0.0.20",
+    "redis==5.2.1",
+    "rq==1.16.2",
+    "sentence-transformers==3.3.1",
+    "slowapi==0.1.9",
+    "sqlalchemy==2.0.36",
+    "uvicorn[standard]==0.34.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+]
+
+[project.scripts]
+compass-api = "backend.app.main:run"
+compass-worker = "worker.worker:main"
+compass-ingest = "ingestion.cli:main"
+compass-search-demo = "backend.app.retrieval.demo:main"
+compass-seed-users = "data.seed.seed_users:main"
+compass-seed-synthetic = "data.seed.seed_synthetic_data:main"
+compass-seed-demo = "data.seed.seed_demo:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["backend*", "worker*", "ingestion*", "data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

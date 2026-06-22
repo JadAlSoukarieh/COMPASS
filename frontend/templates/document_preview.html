@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% set active_nav = "search" %}
+{% set page_heading = "Document Preview" %}
+{% block content %}
+<div class="container" x-data="documentPreviewPage({{ document_id }})" x-init="init()" x-cloak>
+  <div class="preview-head">
+    <div>
+      <h1 class="page-title" x-text="meta.title || 'Document Preview'">Document Preview</h1>
+      <p class="page-subtitle">
+        <span class="pill" x-text="meta.doc_code || ('Document #' + documentId)"></span>
+        <template x-if="selectedPage"><span>Page <span x-text="selectedPage"></span></span></template>
+      </p>
+    </div>
+    <a class="btn ghost" href="/search">{{ icon("search") }} Back to search</a>
+  </div>
+
+  <template x-if="error">
+    <div class="error-banner" x-text="error"></div>
+  </template>
+
+  <div class="preview-layout">
+    <section class="preview-file">
+      <template x-if="loadingFile">
+        <div class="state"><div class="spinner"></div><div>Loading document...</div></div>
+      </template>
+      <template x-if="fileUrl && isPdf">
+        <iframe class="preview-frame" :src="fileUrl" title="Document file preview"></iframe>
+      </template>
+      <template x-if="fileUrl && !isPdf">
+        <div class="state">
+          <div class="state-mark">{{ icon("doc") }}</div>
+          <a class="btn amber" :href="fileUrl" target="_blank" rel="noopener">{{ icon("external") }} Open file</a>
+        </div>
+      </template>
+    </section>
+
+    <aside class="preview-chunk">
+      <div class="ai-head">
+        <span class="ai-mark">{{ icon("file-search") }}</span>
+        <span class="ai-title">Retrieved chunk</span>
+      </div>
+      <template x-if="loadingChunk">
+        <div class="skeleton-card">
+          <div class="skeleton skeleton-line" style="width:50%;"></div>
+          <div class="skeleton skeleton-line" style="width:95%;"></div>
+          <div class="skeleton skeleton-line" style="width:80%;"></div>
+        </div>
+      </template>
+      <template x-if="chunk.text">
+        <div>
+          <div class="source-meta">
+            <span class="pill" x-text="meta.doc_code"></span>
+            <span>p. <span x-text="chunk.page"></span></span>
+            <span>chunk <span x-text="chunk.chunk_id"></span></span>
+          </div>
+          <div class="source-text selected-chunk" x-html="highlight(chunk.text)"></div>
+        </div>
+      </template>
+      <template x-if="!loadingChunk && !chunk.text">
+        <div class="state">No retrieval chunk was attached to this preview.</div>
+      </template>
+    </aside>
+  </div>
+</div>
+
+<script>
+  function documentPreviewPage(documentId) {
+    return {
+      documentId,
+      chunkId: null,
+      selectedPage: null,
+      query: "",
+      meta: {},
+      chunk: {},
+      fileUrl: "",
+      isPdf: false,
+      loadingFile: true,
+      loadingChunk: false,
+      error: "",
+
+      init() {
+        Compass.requireAuth();
+        const params = new URLSearchParams(window.location.search);
+        this.chunkId = params.get("chunk_id");
+        this.selectedPage = params.get("page");
+        this.query = params.get("q") || "";
+        this.loadChunk();
+        this.loadFile();
+      },
+
+      async loadChunk() {
+        if (!this.chunkId) return;
+        this.loadingChunk = true;
+        try {
+          const res = await Compass.api(`/documents/${this.documentId}/chunks/${this.chunkId}`);
+          if (!res.ok) {
+            this.error = "Could not load the retrieved chunk.";
+            return;
+          }
+          const data = await res.json();
+          this.chunk = data;
+          this.meta = { title: data.title, doc_code: data.doc_code };
+          this.selectedPage = data.page || this.selectedPage;
+        } catch (e) {
+          this.error = "Could not reach the server for chunk context.";
+        } finally {
+          this.loadingChunk = false;
+        }
+      },
+
+      async loadFile() {
+        this.loadingFile = true;
+        try {
+          const res = await Compass.api(`/documents/${this.documentId}/file`);
+          if (!res.ok) {
+            this.error = "Could not open the document file.";
+            return;
+          }
+          const blob = await res.blob();
+          this.isPdf = (blob.type || "").includes("pdf");
+          const pageFragment = this.selectedPage && this.isPdf ? `#page=${this.selectedPage}` : "";
+          this.fileUrl = URL.createObjectURL(blob) + pageFragment;
+        } catch (e) {
+          this.error = "Could not reach the server to open the document.";
+        } finally {
+          this.loadingFile = false;
+        }
+      },
+
+      highlight(text) {
+        const safe = (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const terms = this.query.trim().split(/\s+/).filter(t => t.length > 2);
+        if (!terms.length) return safe;
+        const escaped = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        const re = new RegExp("(" + escaped.join("|") + ")", "gi");
+        return safe.replace(re, "<mark>$1</mark>");
+      },
+    };
+  }
+</script>
+{% endblock %}

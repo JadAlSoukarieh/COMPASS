@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% block shell %}
+<div class="login-wrap" x-data="loginForm()" x-init="init()" x-cloak>
+  <!-- Brand panel -->
+  <aside class="login-brand">
+    <div class="lb-logo">
+      <img class="lb-logo-img" src="/static/img/compass-logo.png" alt="Compass" />
+    </div>
+    <div>
+      <h2>Find any policy. Ask any data question. Safely.</h2>
+      <p>An AI assistant for your team — grounded document search and role-aware company data, with the LLM never trusted as a security boundary.</p>
+      <ul class="lb-points">
+        <li>{{ icon("search") }} Meaning-based document search with cited answers</li>
+        <li>{{ icon("chart") }} Role-scoped dashboards Compass can analyze</li>
+        <li>{{ icon("shield") }} Safe SQL catalog — every query backend-validated</li>
+      </ul>
+    </div>
+    <div class="lb-foot">Synthetic data · academic project</div>
+  </aside>
+
+  <!-- Sign-in panel -->
+  <div class="login-panel">
+    <form class="login-card" @submit.prevent="submit()">
+      <h1>Welcome back</h1>
+      <p class="sub">Sign in to continue to Compass.</p>
+
+      <template x-if="error">
+        <div class="error-banner" x-text="error"></div>
+      </template>
+
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" type="text" x-model="username" autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" x-model="password" autocomplete="current-password" required />
+      </div>
+
+      <button class="btn amber" type="submit" :disabled="loading">
+        <span x-text="loading ? 'Signing in…' : 'Sign in'"></span>
+      </button>
+
+      <div class="quickfill">
+        <div class="qf-label">Demo accounts — one click to sign in</div>
+        <div class="qf-row">
+          <button type="button" class="qf-btn" @click="quickFill('superuser')">
+            <div class="qf-role">Superuser</div><div class="qf-desc">Full access</div>
+          </button>
+          <button type="button" class="qf-btn" @click="quickFill('hr')">
+            <div class="qf-role">HR</div><div class="qf-desc">Company-wide</div>
+          </button>
+          <button type="button" class="qf-btn" @click="quickFill('mgr')">
+            <div class="qf-role">Manager</div><div class="qf-desc">Team scope</div>
+          </button>
+          <button type="button" class="qf-btn" @click="quickFill('emp')">
+            <div class="qf-role">Employee</div><div class="qf-desc">Self scope</div>
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  function loginForm() {
+    return {
+      username: "", password: "", error: "", loading: false,
+      init() { if (Compass.token()) window.location.href = "/search"; },
+      quickFill(role) {
+        this.username = role;
+        this.password = "demo-" + role;
+        this.submit();
+      },
+      async submit() {
+        this.error = ""; this.loading = true;
+        try {
+          const res = await fetch("/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: this.username, password: this.password }),
+          });
+          if (!res.ok) {
+            this.error = res.status === 401 ? "Invalid username or password." : "Sign in failed. Please try again.";
+            return;
+          }
+          const data = await res.json();
+          Compass.setSession(data.access_token, data.role);
+          window.location.href = "/search";
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.loading = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

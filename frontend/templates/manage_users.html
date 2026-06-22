@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% set active_nav = "users" %}
+{% set page_heading = "Manage Users" %}
+{% block content %}
+<div class="container" x-data="usersPage()" x-init="init()" x-cloak>
+  <h1 class="page-title">Manage Users</h1>
+  <p class="page-subtitle">Superuser-only account and role management.</p>
+
+  <template x-if="error"><div class="error-banner" x-text="error"></div></template>
+  <template x-if="success"><div class="success-banner" x-text="success"></div></template>
+
+  <div class="panel">
+    <div class="panel-head"><h2 x-text="editingId ? 'Edit user' : 'Create user'"></h2></div>
+    <form @submit.prevent="save()">
+      <div class="grid two">
+        <div class="field"><label>Username</label><input x-model="form.username" required /></div>
+        <div class="field"><label>Password</label><input type="password" x-model="form.password" :required="!editingId" /></div>
+        <div class="field">
+          <label>Role</label>
+          <select x-model="form.role">
+            <option value="emp">Employee</option>
+            <option value="mgr">Manager</option>
+            <option value="hr">HR</option>
+            <option value="superuser">Superuser</option>
+          </select>
+        </div>
+        <div class="field"><label>Employee ID</label><input type="number" x-model.number="form.employee_id" /></div>
+      </div>
+      <div class="controls">
+        <label class="switch"><input type="checkbox" x-model="form.is_active" /><span class="slider"></span></label>
+        <span>Active account</span>
+      </div>
+      <button class="btn amber" type="submit" :disabled="saving" x-text="saving ? 'Saving…' : 'Save user'"></button>
+      <button class="btn ghost" type="button" @click="resetForm()" x-show="editingId">Cancel</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Users</h2>
+      <button class="btn ghost sm" type="button" @click="load()">Refresh</button>
+    </div>
+    <template x-if="loading && !users.length">
+      <div class="state"><div class="spinner"></div><div>Loading users…</div></div>
+    </template>
+    <template x-if="!loading && !users.length">
+      <div class="state">No users found.</div>
+    </template>
+    <template x-if="users.length">
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Employee</th><th>Active</th><th class="actions">Actions</th></tr></thead>
+          <tbody>
+            <template x-for="user in users" :key="user.id">
+              <tr>
+                <td x-text="user.id"></td>
+                <td class="cell-title" x-text="user.username"></td>
+                <td><span class="pill" x-text="user.role"></span></td>
+                <td x-text="user.employee_id ?? '—'"></td>
+                <td>
+                  <span class="badge" :class="user.is_active ? 'ready' : 'failed'">
+                    <span class="dot"></span><span x-text="user.is_active ? 'Active' : 'Inactive'"></span>
+                  </span>
+                </td>
+                <td class="actions"><button class="btn ghost sm" type="button" @click="edit(user)">Edit</button></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script>
+  function usersPage() {
+    return {
+      users: [], editingId: null, saving: false, loading: false, error: "", success: "", form: {},
+      init() {
+        Compass.requireAuth();
+        if (!Compass.canManageUsers()) { window.location.href = "/search"; return; }
+        this.resetForm(); this.load();
+      },
+      resetForm() {
+        this.editingId = null;
+        this.form = { username: "", password: "", role: "emp", employee_id: null, is_active: true };
+      },
+      edit(user) {
+        this.editingId = user.id;
+        this.form = { ...user, password: "" };
+      },
+      payload() {
+        const body = { ...this.form };
+        if (!body.employee_id) body.employee_id = null;
+        if (this.editingId && !body.password) delete body.password;
+        return body;
+      },
+      async load() {
+        this.loading = true; this.error = "";
+        try {
+          const res = await Compass.api("/users");
+          if (!res.ok) { this.error = "Could not load users."; return; }
+          this.users = await res.json();
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.loading = false;
+        }
+      },
+      async save() {
+        this.saving = true; this.error = ""; this.success = "";
+        const path = this.editingId ? `/users/${this.editingId}` : "/users";
+        const method = this.editingId ? "PATCH" : "POST";
+        try {
+          const res = await Compass.api(path, { method, body: JSON.stringify(this.payload()) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { this.error = data.detail || "User save failed."; return; }
+          this.success = "User saved.";
+          this.resetForm();
+          await this.load();
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.saving = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

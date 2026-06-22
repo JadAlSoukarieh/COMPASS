@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ page_title | default("Compass") }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/compass.css" />
+  <link rel="icon" type="image/png" href="/static/img/favicon.png" />
+  <!-- markdown rendering for LLM answers (brief §13) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
+  <!-- Chart.js + datalabels plugin for dashboard charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+  <!-- Alpine.js (brief §16c) + collapse plugin (must load before core) -->
+  <script src="https://cdn.jsdelivr.net/npm/@alpinejs/collapse@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script>
+    // Shared auth/token helper used by every authenticated page.
+    window.Compass = {
+      token() { return localStorage.getItem("compass_token"); },
+      role() { return localStorage.getItem("compass_role"); },
+      setSession(token, role) {
+        localStorage.setItem("compass_token", token);
+        if (role) localStorage.setItem("compass_role", role);
+      },
+      clear() {
+        localStorage.removeItem("compass_token");
+        localStorage.removeItem("compass_role");
+      },
+      canManageDocuments() {
+        return ["hr", "superuser"].includes(this.role());
+      },
+      canManageUsers() {
+        return this.role() === "superuser";
+      },
+      canViewCompany() {
+        return ["hr", "superuser"].includes(this.role());
+      },
+      roleLabel() {
+        return ({ superuser: "Superuser", hr: "HR", mgr: "Manager", emp: "Employee" })[this.role()] || (this.role() || "");
+      },
+      initials() {
+        return (this.role() || "?").slice(0, 2).toUpperCase();
+      },
+      requireAuth() {
+        if (!this.token()) { window.location.href = "/login"; }
+      },
+      async api(path, options = {}) {
+        const opts = { ...options };
+        const headers = { ...(opts.headers || {}) };
+        if (!(opts.body instanceof FormData) && !headers["Content-Type"]) {
+          headers["Content-Type"] = "application/json";
+        }
+        const token = this.token();
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+        opts.headers = headers;
+        const res = await fetch(path, opts);
+        if (res.status === 401) { this.clear(); window.location.href = "/login"; }
+        return res;
+      },
+      renderMarkdown(md) {
+        if (window.marked) return window.marked.parse(md || "");
+        return (md || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      },
+      // Open the source document in a modal, jumped to the page the chunk came from.
+      // Fetches the file as a blob (the endpoint is bearer-authed) and dispatches an event the
+      // global preview modal listens for. chunkText is shown beside the PDF as "where it's cited".
+      async previewDoc(documentId, chunkId = null, page = null, query = "", meta = {}) {
+        if (!documentId) return;
+        window.dispatchEvent(new CustomEvent("compass:preview", {
+          detail: { loading: true, page, query, ...meta },
+        }));
+        try {
+          const res = await this.api(`/documents/${documentId}/file`);
+          if (!res.ok) {
+            window.dispatchEvent(new CustomEvent("compass:preview", { detail: { error: true } }));
+            return;
+          }
+          const blob = await res.blob();
+          const isPdf = (blob.type || "").includes("pdf");
+          // PDF.js viewer fragment: #page=N jumps to the page; #search= highlights terms.
+          const frag = isPdf ? `#page=${page || 1}${query ? `&search=${encodeURIComponent(query)}` : ""}` : "";
+          const url = URL.createObjectURL(blob) + frag;
+          window.dispatchEvent(new CustomEvent("compass:preview", {
+            detail: { url, isPdf, page, query, ...meta },
+          }));
+        } catch (e) {
+          window.dispatchEvent(new CustomEvent("compass:preview", { detail: { error: true } }));
+        }
+      },
+    };
+  </script>
+</head>
+<body>
+{% from "_icons.html" import icon %}
+{% block shell %}
+  <div class="app" x-data="{ active: '{{ active_nav | default('') }}' }" x-cloak>
+    <!-- Left navy sidebar rail -->
+    <aside class="sidebar">
+      <a class="logo" href="/search">
+        <img class="logo-img" src="/static/img/compass-mark.png" alt="" />
+        <span class="logo-text">Compass</span>
+      </a>
+
+      <nav class="nav">
+        <div class="nav-section">Workspace</div>
+        <a href="/search" class="nav-item" :class="{ active: active === 'search' }">
+          {{ icon("search") }}<span class="lbl">Document Search</span>
+        </a>
+        <a href="/dashboards-page" class="nav-item" :class="{ active: active === 'dashboards' }">
+          {{ icon("chart") }}<span class="lbl">Dashboards</span>
+        </a>
+
+        <template x-if="Compass.canManageDocuments()">
+          <div>
+            <div class="nav-section">Manage</div>
+            <a href="/manage-documents" class="nav-item" :class="{ active: active === 'documents' }">
+              {{ icon("doc") }}<span class="lbl">Documents</span>
+            </a>
+            <a href="/manage-employees" class="nav-item" :class="{ active: active === 'employees' }">
+              {{ icon("users") }}<span class="lbl">Employees</span>
+            </a>
+            <a href="/manage-users" class="nav-item" x-show="Compass.canManageUsers()" :class="{ active: active === 'users' }">
+              {{ icon("shield") }}<span class="lbl">Users</span>
+            </a>
+            <a href="/audit-log" class="nav-item" :class="{ active: active === 'audit' }">
+              {{ icon("logs") }}<span class="lbl">Audit Log</span>
+            </a>
+          </div>
+        </template>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="user-chip">
+          <div class="avatar" x-text="Compass.initials()"></div>
+          <div class="user-meta">
+            <div class="user-role" x-text="Compass.roleLabel()"></div>
+            <div class="user-sub">Signed in</div>
+          </div>
+        </div>
+        <a href="#" class="signout" title="Sign out"
+           @click.prevent="Compass.clear(); window.location.href='/login'">{{ icon("logout") }}</a>
+      </div>
+    </aside>
+
+    <!-- Main column -->
+    <div class="main">
+      <header class="topbar">
+        <div class="topbar-title">{% block topbar_title %}{{ page_heading | default("Compass") }}{% endblock %}</div>
+        <div class="topbar-user">
+          <span class="status-pip"></span>
+          <span x-text="Compass.roleLabel()"></span>
+        </div>
+      </header>
+
+      <main class="content">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+    <!-- Persistent chat widget -->
+    <div x-data="compassWidget()" x-init="init()" x-cloak>
+      <button class="widget-launcher" type="button" x-show="ready"
+              @click="open = !open" :aria-expanded="open.toString()" aria-controls="compass-widget-panel">
+        {{ icon("spark") }}<span>Ask Compass</span>
+      </button>
+
+      <aside id="compass-widget-panel" class="widget-panel" x-show="open"
+             x-transition:enter="wt-enter" x-transition:enter-start="wt-enter-start" x-transition:enter-end="wt-enter-end">
+        <div class="widget-head">
+          <div class="widget-head-brand">
+            <span class="widget-mark"><img src="/static/img/compass-mark.png" alt="" /></span>
+            <div>
+              <strong>Ask Compass</strong>
+              <div class="widget-sub">Company data &amp; how-to — answered safely</div>
+            </div>
+          </div>
+          <button class="widget-close" type="button" @click="open = false" aria-label="Close">{{ icon("x") }}</button>
+        </div>
+
+        <div class="widget-history" x-ref="history">
+          <template x-if="!messages.length">
+            <div class="widget-empty">
+              <div class="widget-empty-mark"><img src="/static/img/compass-mark.png" alt="" /></div>
+              <p>Ask about leave balances, headcount, or how to use Compass.</p>
+              <div class="widget-suggest">
+                <button type="button" @click="draft='What is the headcount by department?'; send()">Headcount by department</button>
+                <button type="button" @click="draft='Show the salary distribution by department'; send()">Salary distribution by department</button>
+              </div>
+            </div>
+          </template>
+          <template x-for="item in messages" :key="item.id">
+            <div class="widget-msg" :class="item.role">
+              <template x-if="item.role === 'assistant'">
+                <div class="bubble assistant">
+                  <div class="bubble-head">
+                    <span class="bubble-mark">{{ icon("spark") }}</span>
+                    <span>Compass</span>
+                    <template x-if="item.scope">
+                      <span class="scope-tag" :class="item.scope" x-text="item.scope"></span>
+                    </template>
+                  </div>
+                  <div class="bubble-body" x-html="Compass.renderMarkdown(item.content)"></div>
+                </div>
+              </template>
+              <template x-if="item.role === 'user'">
+                <div class="bubble user" x-text="item.content"></div>
+              </template>
+            </div>
+          </template>
+          <template x-if="loading">
+            <div class="widget-msg assistant">
+              <div class="bubble assistant typing"><span></span><span></span><span></span></div>
+            </div>
+          </template>
+        </div>
+
+        <template x-if="error">
+          <div class="error-banner" x-text="error"></div>
+        </template>
+
+        <form class="widget-form" @submit.prevent="send()">
+          <textarea x-model="draft" rows="2" placeholder="Ask Compass a question…" :disabled="loading"
+                    @keydown.enter.prevent="if(!loading && draft.trim()) send()"></textarea>
+          <button class="btn amber widget-send" type="submit" :disabled="loading || !draft.trim()" aria-label="Send">
+            {{ icon("send") }}
+          </button>
+        </form>
+      </aside>
+    </div>
+
+    <!-- Document preview modal (global; opened via Compass.previewDoc / 'compass:preview' event) -->
+    <div x-data="previewModal()" x-init="init()" x-cloak>
+      <div class="modal-overlay" x-show="open" x-transition.opacity @click.self="close()">
+        <div class="preview-modal">
+          <div class="preview-head">
+            <div class="preview-title">
+              <span class="ai-mark">{{ icon("doc") }}</span>
+              <div>
+                <strong x-text="title || 'Document preview'"></strong>
+                <div class="preview-sub">
+                  <span class="pill" x-text="docCode" x-show="docCode"></span>
+                  <span x-show="page">Page <span x-text="page"></span> — where this was cited</span>
+                </div>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+              <a class="btn ghost sm" :href="url" target="_blank" rel="noopener" x-show="url && isPdf">
+                {{ icon("external") }} Open full page
+              </a>
+              <button class="widget-close" type="button" @click="close()" aria-label="Close">{{ icon("x") }}</button>
+            </div>
+          </div>
+
+          <div class="preview-body">
+            <div class="preview-pdf">
+              <template x-if="loading">
+                <div class="state"><div class="spinner"></div><div>Loading document…</div></div>
+              </template>
+              <template x-if="error">
+                <div class="state"><div class="state-mark">{{ icon("doc") }}</div>Could not open this document.</div>
+              </template>
+              <template x-if="!loading && !error && url && isPdf">
+                <iframe :src="url" title="Document preview"></iframe>
+              </template>
+              <template x-if="!loading && !error && url && !isPdf">
+                <div class="state">
+                  <div class="state-mark">{{ icon("doc") }}</div>
+                  This file type can't preview inline.
+                  <div style="margin-top:0.75rem;"><a class="btn ghost sm" :href="url" :download="(docCode||'document')">Download</a></div>
+                </div>
+              </template>
+            </div>
+            <aside class="preview-chunk" x-show="chunkText">
+              <div class="preview-chunk-head">{{ icon("spark") }} Retrieved chunk</div>
+              <div class="preview-chunk-body" x-html="highlight(chunkText)"></div>
+            </aside>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+<script>
+  function previewModal() {
+    return {
+      open: false, loading: false, error: false, url: "", isPdf: true,
+      page: null, query: "", title: "", docCode: "", chunkText: "",
+      init() {
+        window.addEventListener("compass:preview", (e) => {
+          const d = e.detail || {};
+          if (d.error) { this.error = true; this.loading = false; return; }
+          this.open = true; this.error = false;
+          if ("loading" in d) this.loading = d.loading;
+          if ("url" in d) { this.url = d.url; this.loading = false; }
+          if ("isPdf" in d) this.isPdf = d.isPdf;
+          if ("page" in d) this.page = d.page;
+          if ("query" in d) this.query = d.query || "";
+          if ("title" in d) this.title = d.title || "";
+          if ("docCode" in d) this.docCode = d.docCode || "";
+          if ("chunkText" in d) this.chunkText = d.chunkText || "";
+        });
+      },
+      close() { this.open = false; this.url = ""; this.chunkText = ""; },
+      highlight(text) {
+        const safe = (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const terms = (this.query || "").trim().split(/\s+/).filter(t => t.length > 2);
+        if (!terms.length) return safe;
+        const esc = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        return safe.replace(new RegExp("(" + esc.join("|") + ")", "gi"), "<mark>$1</mark>");
+      },
+    };
+  }
+
+  function compassWidget() {
+    return {
+      open: false,
+      ready: false,
+      loading: false,
+      draft: "",
+      error: "",
+      messages: [],
+
+      init() {
+        this.ready = !!Compass.token();
+        window.addEventListener("storage", () => {
+          this.ready = !!Compass.token();
+          if (!this.ready) this.open = false;
+        });
+      },
+
+      scrollDown() {
+        this.$nextTick(() => { const h = this.$refs.history; if (h) h.scrollTop = h.scrollHeight; });
+      },
+
+      async send() {
+        const message = this.draft.trim();
+        if (!message) return;
+        this.error = "";
+        this.loading = true;
+        this.open = true;
+        this.messages.push({ id: crypto.randomUUID(), role: "user", content: message });
+        this.draft = "";
+        this.scrollDown();
+        try {
+          const res = await Compass.api("/widget/message", {
+            method: "POST",
+            body: JSON.stringify({
+              message,
+              context: {
+                page: window.location.pathname.replace("/", "") || "home",
+                dashboard_id: window.CompassDashboardId || null,
+              },
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            this.error = this.formatError(data.detail);
+            return;
+          }
+          // Show a scope tag derived from the backend's scope decision (visualizes role-awareness).
+          const scopeTag = ({ allowed: "company", scoped: "your scope" })[data.scope_decision] || null;
+          this.messages.push({
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: data.answer_markdown,
+            scope: data.refused ? null : scopeTag,
+          });
+          this.scrollDown();
+        } catch (e) {
+          this.error = "Could not reach the assistant.";
+        } finally {
+          this.loading = false;
+          this.scrollDown();
+        }
+      },
+
+      formatError(detail) {
+        if (detail === "prompt_injection_pattern") return "That message was blocked by the input guard.";
+        if (String(detail || "").startsWith("unknown_catalog_id")) return "Compass could not map that to a safe catalog query.";
+        if (String(detail || "").startsWith("employee_scope_refused")) return "That request is outside your data scope.";
+        return "Compass could not answer that request.";
+      },
+    };
+  }
+</script>
+</body>
+</html>

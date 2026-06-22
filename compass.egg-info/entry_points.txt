@@ -1,0 +1,4 @@
+[console_scripts]
+compass-api = backend.app.main:run
+compass-ingest = ingestion.cli:main
+compass-worker = worker.worker:main

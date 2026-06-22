@@ -1,0 +1,2 @@
+"""Compass backend application package."""
+

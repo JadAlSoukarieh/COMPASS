@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% set active_nav = "employees" %}
+{% set page_heading = "Manage Employees" %}
+{% block content %}
+<div class="container" x-data="employeesPage()" x-init="init()" x-cloak>
+  <h1 class="page-title">Manage Employees</h1>
+  <p class="page-subtitle">Create and update employee records. Writes bust dashboard cache keys.</p>
+
+  <template x-if="error"><div class="error-banner" x-text="error"></div></template>
+  <template x-if="success"><div class="success-banner" x-text="success"></div></template>
+
+  <div class="panel">
+    <div class="panel-head"><h2 x-text="editingId ? 'Edit employee' : 'Create employee'"></h2></div>
+    <form @submit.prevent="save()">
+      <div class="grid two">
+        <div class="field"><label>Full name</label><input x-model="form.full_name" required /></div>
+        <div class="field"><label>Department</label><input x-model="form.department" required /></div>
+        <div class="field"><label>Grade</label><input x-model="form.grade" required /></div>
+        <div class="field"><label>Manager ID</label><input type="number" x-model.number="form.manager_id" /></div>
+        <div class="field"><label>Hire date</label><input type="date" x-model="form.hire_date" required /></div>
+        <div class="field"><label>Contract end date</label><input type="date" x-model="form.contract_end_date" /></div>
+        <div class="field"><label>Salary</label><input type="number" step="0.01" x-model.number="form.salary" required /></div>
+        <div class="field"><label>Status</label><input x-model="form.status" required /></div>
+      </div>
+      <button class="btn amber" type="submit" :disabled="saving" x-text="saving ? 'Saving…' : 'Save employee'"></button>
+      <button class="btn ghost" type="button" @click="resetForm()" x-show="editingId">Cancel</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Employees</h2>
+      <button class="btn ghost sm" type="button" @click="load()">Refresh</button>
+    </div>
+    <template x-if="!employees.length"><div class="state">No employees found.</div></template>
+    <template x-if="employees.length">
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>ID</th><th>Name</th><th>Department</th><th>Grade</th><th>Status</th><th class="actions">Actions</th></tr></thead>
+          <tbody>
+            <template x-for="emp in employees" :key="emp.id">
+              <tr>
+                <td x-text="emp.id"></td>
+                <td><div class="cell-title" x-text="emp.full_name"></div><div class="cell-sub" x-text="'Manager: ' + (emp.manager_id ?? 'none')"></div></td>
+                <td x-text="emp.department"></td>
+                <td x-text="emp.grade"></td>
+                <td x-text="emp.status"></td>
+                <td class="actions"><button class="btn ghost sm" type="button" @click="edit(emp)">Edit</button></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script>
+  function employeesPage() {
+    return {
+      employees: [], editingId: null, saving: false, error: "", success: "",
+      form: {},
+      init() {
+        Compass.requireAuth();
+        if (!Compass.canManageDocuments()) { window.location.href = "/search"; return; }
+        this.resetForm(); this.load();
+      },
+      resetForm() {
+        this.editingId = null;
+        this.form = { full_name: "", department: "", grade: "", manager_id: null, hire_date: "", contract_end_date: "", salary: null, status: "active" };
+      },
+      edit(emp) {
+        this.editingId = emp.id;
+        this.form = { ...emp, contract_end_date: emp.contract_end_date || "" };
+      },
+      payload() {
+        const body = { ...this.form };
+        if (!body.manager_id) body.manager_id = null;
+        if (!body.contract_end_date) body.contract_end_date = null;
+        return body;
+      },
+      async load() {
+        this.error = "";
+        const res = await Compass.api("/employees");
+        if (!res.ok) { this.error = "Could not load employees."; return; }
+        this.employees = await res.json();
+      },
+      async save() {
+        this.saving = true; this.error = ""; this.success = "";
+        const path = this.editingId ? `/employees/${this.editingId}` : "/employees";
+        const method = this.editingId ? "PATCH" : "POST";
+        try {
+          const res = await Compass.api(path, { method, body: JSON.stringify(this.payload()) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { this.error = data.detail || "Employee save failed."; return; }
+          this.success = "Employee saved.";
+          this.resetForm();
+          await this.load();
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.saving = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

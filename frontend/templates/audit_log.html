@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% set active_nav = "audit" %}
+{% set page_heading = "Audit Log" %}
+{% block content %}
+<div class="container" x-data="auditPage()" x-init="init()" x-cloak>
+  <h1 class="page-title">Audit Log</h1>
+  <p class="page-subtitle">Filter meaningful Compass actions and inspect JSON detail.</p>
+
+  <template x-if="error"><div class="error-banner" x-text="error"></div></template>
+
+  <div class="panel">
+    <div class="grid two">
+      <div class="field"><label>User ID</label><input type="number" x-model.number="filters.user_id" /></div>
+      <div class="field"><label>Action type</label><input x-model="filters.action_type" placeholder="data_query" /></div>
+      <div class="field"><label>From</label><input type="date" x-model="filters.date_from" /></div>
+      <div class="field"><label>To</label><input type="date" x-model="filters.date_to" /></div>
+    </div>
+    <button class="btn amber" type="button" @click="load()">Apply filters</button>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Events</h2><button class="btn ghost sm" type="button" @click="load()">Refresh</button></div>
+    <template x-if="!rows.length"><div class="state">No audit rows matched those filters.</div></template>
+    <template x-if="rows.length">
+      <div class="table-wrap">
+        <table class="data">
+          <thead><tr><th>Time</th><th>User</th><th>Role</th><th>Action</th><th>Status</th><th>Detail</th></tr></thead>
+          <tbody>
+            <template x-for="row in rows" :key="row.id">
+              <tr>
+                <td><span class="cell-sub" x-text="formatTs(row.ts)"></span></td>
+                <td x-text="row.user_id ?? '—'"></td>
+                <td><span class="pill" x-text="row.role"></span></td>
+                <td x-text="row.action_type"></td>
+                <td x-text="row.result_status"></td>
+                <td><pre class="cell-sub" x-text="JSON.stringify(row.detail, null, 2)"></pre></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script>
+  function auditPage() {
+    return {
+      rows: [], error: "", filters: { user_id: null, action_type: "", date_from: "", date_to: "" },
+      init() {
+        Compass.requireAuth();
+        if (!Compass.canViewCompany()) { window.location.href = "/search"; return; }
+        this.load();
+      },
+      query() {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(this.filters)) {
+          if (value !== null && value !== "") params.set(key, value);
+        }
+        return params.toString();
+      },
+      async load() {
+        this.error = "";
+        try {
+          const qs = this.query();
+          const res = await Compass.api(`/audit${qs ? '?' + qs : ''}`);
+          if (!res.ok) { this.error = "Could not load audit rows."; return; }
+          this.rows = await res.json();
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        }
+      },
+      formatTs(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+      },
+    };
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,339 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% set active_nav = "dashboards" %}
+{% set page_heading = "Dashboards" %}
+{% block content %}
+<div class="container" x-data="dashboardsPage()" x-init="init()" x-cloak style="max-width:1100px;">
+  <h1 class="page-title">Dashboards</h1>
+  <p class="page-subtitle">Role-scoped operational views backed by the SQL catalog. Ask Compass to analyze any view.</p>
+
+  <template x-if="error">
+    <div class="error-banner" x-text="error"></div>
+  </template>
+
+  <template x-if="loading && !dashboards.length">
+    <div class="state"><div class="spinner"></div><div>Loading dashboards…</div></div>
+  </template>
+  <template x-if="!loading && !dashboards.length">
+    <div class="state">No dashboards are available for your role.</div>
+  </template>
+
+  <template x-if="dashboards.length">
+    <div class="dash-layout">
+      <!-- Left: dashboard list -->
+      <div class="dash-list">
+        <template x-for="dashboard in dashboards" :key="dashboard.id">
+          <button type="button" class="dash-list-item"
+                  :class="{ active: selected && selected.id === dashboard.id }"
+                  @click="select(dashboard)">
+            <div class="dli-title" x-text="dashboard.title"></div>
+            <div class="dli-meta">
+              <span class="scope-pill" :class="dashboard.scope" x-text="dashboard.scope"></span>
+              <template x-if="dashboard.chart_type">
+                <span class="dli-type" x-text="dashboard.chart_type.replace('-',' ')"></span>
+              </template>
+              <template x-if="!dashboard.chart_type"><span class="dli-type">table</span></template>
+            </div>
+          </button>
+        </template>
+      </div>
+
+      <!-- Right: detail pane -->
+      <div class="dash-detail">
+        <template x-if="selected">
+          <div class="panel">
+            <div class="detail-head">
+              <div>
+                <h2 x-text="selected.title" style="margin:0;"></h2>
+                <div class="cell-sub" x-text="selected.description" style="margin-top:0.2rem;"></div>
+              </div>
+              <div class="meta">
+                <span class="scope-pill" :class="dataScope" x-text="dataScope"></span>
+                <template x-if="cached"><span class="pill">cached</span></template>
+                <button class="btn ghost sm" type="button" @click="select(selected)" :disabled="loadingData">Refresh</button>
+                <button class="btn amber sm" type="button" @click="analyze()" :disabled="analyzing || !rows.length">
+                  {{ icon("spark") }}<span x-text="analyzing ? 'Analyzing…' : 'Ask Compass to analyze this'"></span>
+                </button>
+              </div>
+            </div>
+
+            <template x-if="loadingData">
+              <div class="state"><div class="spinner"></div><div>Loading data…</div></div>
+            </template>
+
+            <!-- KPI cards -->
+            <template x-if="!loadingData && kpis().length">
+              <div class="kpi-row">
+                <template x-for="kpi in kpis()" :key="kpi.label">
+                  <div class="kpi">
+                    <div class="kpi-label" x-text="kpi.label"></div>
+                    <div class="kpi-value" x-text="kpi.value"></div>
+                    <template x-if="kpi.sub"><div class="kpi-sub" x-text="kpi.sub"></div></template>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- Chart. Render is triggered from the canvas's own x-init so it fires only once the
+                 element is mounted and laid out (avoids drawing into a 0-size/detached canvas). -->
+            <template x-if="!loadingData && rows.length && selected && selected.chart_type">
+              <div class="chart-wrap">
+                <!-- x-effect re-renders whenever the selected dashboard or its rows change, so
+                     switching dashboards (canvas reused) and first mount both draw correctly. -->
+                <canvas x-ref="chart" x-effect="chartTick; $nextTick(() => renderChart())"></canvas>
+              </div>
+            </template>
+
+            <!-- Analysis block -->
+            <template x-if="analyzing">
+              <div class="state"><div class="spinner"></div><div>Compass is analyzing this view…</div></div>
+            </template>
+            <template x-if="analysis && !analyzing">
+              <div class="answer-block">
+                <div class="ai-head">
+                  <span class="ai-mark">{{ icon("spark") }}</span>
+                  <span class="ai-title">Compass analysis</span>
+                  <span class="cited-badge" style="margin-left:auto;">{{ icon("check") }} <span x-text="dataScope"></span> scope</span>
+                </div>
+                <div class="answer-body" x-html="Compass.renderMarkdown(analysis)"></div>
+              </div>
+            </template>
+
+            <!-- Collapsible data table -->
+            <template x-if="!loadingData && rows.length">
+              <div>
+                <span class="table-toggle" @click="showTable = !showTable"
+                      x-text="showTable ? '▾ Hide data table' : '▸ Show data table (' + rows.length + ' rows)'"></span>
+                <div class="table-wrap" x-show="showTable" x-collapse>
+                  <table class="data">
+                    <thead>
+                      <tr><template x-for="key in columns" :key="key"><th x-text="prettyKey(key)"></th></template></tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="(row, index) in rows" :key="index">
+                        <tr>
+                          <template x-for="key in columns" :key="key">
+                            <td :class="{ num: isNumeric(key) }" x-text="formatCell(key, row[key])"></td>
+                          </template>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+
+            <template x-if="!loadingData && !rows.length">
+              <div class="state">No rows returned for this scoped view.</div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+  </template>
+</div>
+
+<script>
+  function dashboardsPage() {
+    return {
+      dashboards: [], selected: null, rows: [], columns: [], dataScope: "", cached: false,
+      barColumn: null, loading: false, loadingData: false, analyzing: false, error: "", analysis: "",
+      chartInstance: null, showTable: false, chartTick: 0,
+
+      init() { Compass.requireAuth(); this.loadDashboards(); },
+
+      async loadDashboards() {
+        this.loading = true; this.error = "";
+        try {
+          const res = await Compass.api("/dashboards");
+          if (!res.ok) { this.error = "Could not load dashboards."; return; }
+          this.dashboards = await res.json();
+          // Auto-select the first dashboard so the page is never empty.
+          if (this.dashboards.length) this.select(this.dashboards[0]);
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async select(dashboard) {
+        this.selected = dashboard; this.analysis = ""; this.error = "";
+        this.rows = []; this.columns = []; this.barColumn = null; this.showTable = false;
+        this.loadingData = true;
+        window.CompassDashboardId = dashboard.id;   // shared with the chat widget (mode 6b)
+        try {
+          const res = await Compass.api(`/dashboards/${dashboard.id}/data`);
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { this.error = data.detail || "Could not load dashboard data."; return; }
+          this.rows = data.rows || [];
+          this.columns = this.rows.length ? Object.keys(this.rows[0]) : [];
+          this.dataScope = data.scope;
+          this.cached = !!data.cached;
+          this.barColumn = this.detectBarColumn();
+          // Bump chartTick so the canvas x-effect re-runs renderChart for this new data
+          // (handles both first mount and switching between dashboards on a reused canvas).
+          this.chartTick++;
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.loadingData = false;
+        }
+      },
+
+      renderChart(attempt = 0) {
+        const d = this.selected;
+        if (!d || !d.chart_type || !this.rows.length) return;
+        if (typeof Chart === "undefined") {  // library still loading
+          if (attempt < 40) return setTimeout(() => this.renderChart(attempt + 1), 100);
+          return;
+        }
+        // The canvas lives inside an x-if template Alpine renders asynchronously. Query it fresh
+        // from the DOM each time (Alpine $refs can be stale after the template re-renders), and
+        // wait until a canvas with a real 2d context and non-zero size is present.
+        const canvas = (this.$refs.chart && this.$refs.chart.getContext)
+          ? this.$refs.chart
+          : this.$root.querySelector("canvas");
+        if (!canvas || !canvas.getContext || canvas.clientWidth === 0) {
+          if (attempt < 40) return setTimeout(() => this.renderChart(attempt + 1), 50);
+          return;
+        }
+        if (this.chartInstance) { this.chartInstance.destroy(); this.chartInstance = null; }
+
+        const NAVY = "#0F1F3D";
+        const PALETTE = ["#F59E0B", "#0F1F3D", "#16A34A", "#3B82F6", "#DC2626",
+                         "#8B5CF6", "#0891B2", "#CA8A04", "#DB2777", "#65A30D"];
+        const labels = this.rows.map(r => this.formatCell(d.chart_x, r[d.chart_x]));
+        const series = (d.chart_y && d.chart_y.length) ? d.chart_y : [this.barColumn].filter(Boolean);
+        if (!series.length) return;
+
+        const fmtVal = (v) => {
+          if (v == null) return "";
+          if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+          return Number.isInteger(v) ? v : v.toFixed(1);
+        };
+
+        let type = "bar", datasets, isPie = false;
+        if (d.chart_type === "pie") {
+          isPie = true; type = "pie";
+          datasets = [{ data: this.rows.map(r => Number(r[series[0]]) || 0), backgroundColor: PALETTE, borderWidth: 1, borderColor: "#fff" }];
+        } else if (d.chart_type === "line") {
+          type = "line";
+          datasets = series.map((s, i) => ({
+            label: this.prettyKey(s), data: this.rows.map(r => Number(r[s]) || 0),
+            borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length] + "33",
+            tension: 0.3, fill: false,
+          }));
+        } else {
+          datasets = series.map((s, i) => ({
+            label: this.prettyKey(s), data: this.rows.map(r => Number(r[s]) || 0),
+            backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 4, maxBarThickness: 48,
+          }));
+        }
+
+        const datalabels = {
+          color: isPie ? "#fff" : NAVY,
+          anchor: isPie ? "center" : "end",
+          align: isPie ? "center" : "end",
+          font: { size: 10, weight: "600" },
+          formatter: (value, ctx) => {
+            if (isPie) {
+              const total = ctx.dataset.data.reduce((a, b) => a + b, 0) || 1;
+              const pct = Math.round((value / total) * 100);
+              return pct >= 5 ? `${labels[ctx.dataIndex]}\n${pct}%` : "";
+            }
+            return value ? fmtVal(value) : "";
+          },
+        };
+
+        const hasDataLabels = typeof ChartDataLabels !== "undefined";
+        this.chartInstance = new Chart(canvas, {
+          type,
+          data: { labels, datasets },
+          plugins: hasDataLabels ? [ChartDataLabels] : [],
+          options: {
+            responsive: true, maintainAspectRatio: false, animation: false,
+            layout: { padding: { top: 18 } },
+            plugins: {
+              legend: { display: isPie ? false : series.length > 1, labels: { color: NAVY, usePointStyle: true } },
+              datalabels: hasDataLabels ? datalabels : { display: false },
+              tooltip: { enabled: true },
+            },
+            scales: isPie ? {} : {
+              x: { ticks: { color: NAVY, autoSkip: true, maxRotation: 35 }, grid: { display: false } },
+              y: { ticks: { color: NAVY, callback: fmtVal }, grid: { color: "rgba(15,31,61,0.06)" }, beginAtZero: true },
+            },
+          },
+        });
+        // Ensure correct sizing once laid out.
+        requestAnimationFrame(() => this.chartInstance && this.chartInstance.resize());
+      },
+
+      async analyze() {
+        if (!this.selected) return;
+        this.analyzing = true; this.error = "";
+        try {
+          const res = await Compass.api(`/dashboards/${this.selected.id}/analyze`, { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) { this.error = data.detail || "Could not analyze this view."; return; }
+          this.analysis = data.analysis_markdown;
+          this.dataScope = data.scope;
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.analyzing = false;
+        }
+      },
+
+      // --- presentation helpers ---
+      isNumeric(key) { return this.rows.length && typeof this.rows[0][key] === "number"; },
+      prettyKey(key) { return key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase()); },
+      formatCell(key, value) {
+        if (value === null || value === undefined) return "—";
+        if (typeof value === "number") {
+          if (/salary|days|count|headcount|remaining|total|used|pending|tenure/i.test(key)) {
+            return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+          }
+          return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+        }
+        return value;
+      },
+      // KPIs: headline numbers derived from the rows.
+      kpis() {
+        if (!this.rows.length || !this.selected) return [];
+        const d = this.selected;
+        // single-row summary -> each numeric field becomes a KPI
+        if (this.rows.length === 1) {
+          return Object.entries(this.rows[0])
+            .filter(([k, v]) => typeof v === "number" && !/^id$|_id$|year/i.test(k))
+            .map(([k, v]) => ({ label: this.prettyKey(k), value: this.formatCell(k, v) }));
+        }
+        const cards = [{ label: "Rows", value: this.rows.length }];
+        const series = (d.chart_y && d.chart_y.length) ? d.chart_y : [this.barColumn].filter(Boolean);
+        // For a grouped two-series view (e.g. total vs used) show the ratio as a headline.
+        if (series.length === 2) {
+          const t = this.rows.reduce((s, r) => s + (Number(r[series[0]]) || 0), 0);
+          const u = this.rows.reduce((s, r) => s + (Number(r[series[1]]) || 0), 0);
+          cards.push({ label: "Total " + this.prettyKey(series[0]), value: t.toLocaleString() });
+          if (t > 0) cards.push({ label: this.prettyKey(series[1]) + " rate", value: Math.round((u / t) * 100) + "%" });
+        } else if (series.length === 1) {
+          const vals = this.rows.map(r => Number(r[series[0]]) || 0);
+          const total = vals.reduce((a, b) => a + b, 0);
+          const topIdx = vals.indexOf(Math.max(...vals));
+          cards.push({ label: "Total " + this.prettyKey(series[0]), value: total.toLocaleString() });
+          if (this.rows[topIdx]) {
+            cards.push({ label: "Top " + this.prettyKey(d.chart_x), value: this.formatCell(d.chart_x, this.rows[topIdx][d.chart_x]),
+                         sub: this.formatCell(series[0], vals[topIdx]) + " " + this.prettyKey(series[0]) });
+          }
+        }
+        return cards;
+      },
+      detectBarColumn() {
+        if (this.rows.length < 2) return null;
+        const numeric = this.columns.filter(k => typeof this.rows[0][k] === "number" && !/id|year/i.test(k));
+        return numeric.length === 1 ? numeric[0] : null;
+      },
+    };
+  }
+</script>
+{% endblock %}

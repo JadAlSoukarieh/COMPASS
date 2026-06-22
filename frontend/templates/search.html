@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% from "_icons.html" import icon %}
+{% set active_nav = "search" %}
+{% set page_heading = "Document Search" %}
+{% block content %}
+<div class="container" x-data="searchPage()" x-init="init()" x-cloak>
+  <h1 class="page-title">Document Search</h1>
+  <p class="page-subtitle">Find the right document even when you don't know its code or exact title.</p>
+
+  <form @submit.prevent="run()">
+    <div class="search-bar">
+      <input type="text" x-model="query" placeholder="Ask in plain language, e.g. how much annual leave do new joiners get?" />
+      <button class="btn amber" type="submit" :disabled="loading || !query.trim()">
+        <span x-text="loading ? 'Searching…' : 'Search'"></span>
+      </button>
+    </div>
+    <div class="controls">
+      <label class="switch">
+        <input type="checkbox" x-model="analyze" />
+        <span class="slider"></span>
+      </label>
+      <span><strong>Analyze with AI</strong> — <span x-text="analyze ? 'grounded answer with citations' : 'ranked source chunks only'"></span></span>
+    </div>
+  </form>
+
+  <!-- Error -->
+  <template x-if="error">
+    <div class="error-banner" x-text="error"></div>
+  </template>
+
+  <!-- Loading (skeletons) -->
+  <template x-if="loading">
+    <div>
+      <div class="status-line" style="opacity:0.7;">
+        <span x-text="analyze ? 'Retrieving and analyzing sources…' : 'Retrieving sources…'"></span>
+      </div>
+      <template x-for="i in 3" :key="i">
+        <div class="skeleton-card">
+          <div class="skeleton skeleton-line" style="width:35%;"></div>
+          <div class="skeleton skeleton-line" style="width:90%;"></div>
+          <div class="skeleton skeleton-line" style="width:75%;"></div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- Status / telemetry strip -->
+  <template x-if="!loading && statusLine">
+    <div class="status-line">
+      <span class="sl-chip"><strong x-text="statusLine.model"></strong></span>
+      <span class="sl-chip">hybrid · kw+vector</span>
+      <span class="sl-chip" x-show="statusLine.reranked">reranked</span>
+      <span class="sl-chip"><strong x-text="statusLine.n_retrieved"></strong> retrieved</span>
+      <span class="sl-chip"><strong x-text="statusLine.k_cited"></strong> cited</span>
+      <span class="sl-chip"><strong x-text="statusLine.latency_ms"></strong> ms</span>
+    </div>
+  </template>
+
+  <!-- AI answer surface (Analyze ON) -->
+  <template x-if="!loading && mode === 'answer' && answer">
+    <div class="answer-block" :class="{ refusal: refused }">
+      <div class="ai-head">
+        <span class="ai-mark">{{ icon("spark") }}</span>
+        <span class="ai-title" x-text="refused ? 'No grounded answer' : 'Compass answer'"></span>
+        <template x-if="!refused">
+          <span class="cited-badge" style="margin-left:auto;">{{ icon("check") }} grounded</span>
+        </template>
+      </div>
+      <div class="answer-body" x-html="Compass.renderMarkdown(answer)"></div>
+    </div>
+  </template>
+
+  <!-- Ranked chunks (Analyze OFF) -->
+  <template x-if="!loading && mode === 'retrieval' && results.length">
+    <div class="sources">
+      <h3 x-text="results.length + ' results'"></h3>
+      <template x-for="item in results" :key="item.chunk_id">
+        <div class="source-card">
+          <div class="title" x-text="item.title"></div>
+          <div class="source-meta">
+            <span class="pill" x-text="item.doc_code"></span>
+            <span>p. <span x-text="item.page"></span></span>
+            <span class="score">score <span x-text="item.score.toFixed(3)"></span></span>
+            <a class="expand-link" href="#" @click.prevent="Compass.previewDoc(item.document_id, item.chunk_id, item.page, query, { title: item.title, docCode: item.doc_code, chunkText: item.snippet })">{{ icon("external") }} Preview</a>
+          </div>
+          <div class="source-text" x-html="highlight(item.snippet)"></div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- Sources panel (Analyze ON) -->
+  <template x-if="!loading && mode === 'answer' && sources.length">
+    <div class="sources">
+      <h3>Sources</h3>
+      <template x-for="src in sources" :key="src.chunk_id">
+        <div class="source-card">
+          <div class="title">
+            <span x-text="src.title"></span>
+            <template x-if="src.cited"><span class="cited-badge">{{ icon("check") }} Cited in answer</span></template>
+          </div>
+          <div class="source-meta">
+            <span class="pill" x-text="src.doc_code"></span>
+            <span>p. <span x-text="src.page"></span></span>
+            <a class="expand-link" href="#" @click.prevent="Compass.previewDoc(src.document_id, src.chunk_id, src.page, query, { title: src.title, docCode: src.doc_code, chunkText: src.text })">{{ icon("external") }} Preview</a>
+          </div>
+          <span class="expand-link" @click="src._open = !src._open"
+                x-text="src._open ? 'Hide source text' : 'Show source text'"></span>
+          <template x-if="src._open">
+            <div class="source-text" x-html="highlight(src.text)"></div>
+          </template>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- Empty state (searched, nothing found) -->
+  <template x-if="!loading && searched && mode === 'retrieval' && !results.length">
+    <div class="state"><div class="state-mark">{{ icon("search") }}</div>No matching documents found. Try rephrasing your question.</div>
+  </template>
+  <template x-if="!loading && searched && mode === 'answer' && !sources.length">
+    <div class="state"><div class="state-mark">{{ icon("search") }}</div>No documents matched closely enough to answer. Try rephrasing your question.</div>
+  </template>
+
+  <!-- Initial state -->
+  <template x-if="!loading && !searched && !error">
+    <div class="state"><div class="state-mark">{{ icon("file-search") }}</div>Type a question above to search the document corpus by meaning.</div>
+  </template>
+</div>
+
+<script>
+  function searchPage() {
+    return {
+      query: "", analyze: false, loading: false, searched: false, error: "",
+      mode: "", results: [], answer: "", refused: false, sources: [], statusLine: null,
+
+      init() { Compass.requireAuth(); },
+
+      highlight(text) {
+        const safe = (text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const terms = this.query.trim().split(/\s+/).filter(t => t.length > 2);
+        if (!terms.length) return safe;
+        const escaped = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        const re = new RegExp("(" + escaped.join("|") + ")", "gi");
+        return safe.replace(re, "<mark>$1</mark>");
+      },
+
+      statusText() {
+        const s = this.statusLine;
+        if (!s) return "";
+        return `${s.model} · ${s.retrieval} (kw+vector) · ${s.reranked ? "reranked" : "no rerank"} · `
+             + `${s.n_retrieved} retrieved · ${s.k_cited} cited · ${s.latency_ms} ms`;
+      },
+
+      reset() {
+        this.error = ""; this.mode = ""; this.results = [];
+        this.answer = ""; this.refused = false; this.sources = []; this.statusLine = null;
+      },
+
+      async run() {
+        if (!this.query.trim()) return;
+        this.reset(); this.loading = true; this.searched = true;
+        try {
+          const res = await Compass.api("/search", {
+            method: "POST",
+            body: JSON.stringify({ query: this.query.trim(), analyze: this.analyze }),
+          });
+          if (!res.ok) {
+            const detail = await res.json().catch(() => ({}));
+            this.error = this.errorMessage(res.status, detail.detail);
+            return;
+          }
+          const data = await res.json();
+          this.statusLine = data.status_line;
+          this.mode = data.mode;
+          if (data.mode === "answer") {
+            this.answer = data.answer_markdown;
+            this.refused = data.refused;
+            this.sources = (data.sources || []).map(s => ({ ...s, _open: s.cited }));
+          } else {
+            this.results = data.results || [];
+          }
+        } catch (e) {
+          this.error = "Could not reach the server.";
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      errorMessage(status, detail) {
+        if (status === 429) return "You're searching too fast — please wait a moment.";
+        if (detail === "prompt_injection_pattern") return "That query was blocked by the input guard.";
+        if (detail === "query_too_long") return "That query is too long. Please shorten it.";
+        if (detail === "empty_query") return "Please enter a question.";
+        return "Search failed. Please try again.";
+      },
+    };
+  }
+</script>
+{% endblock %}

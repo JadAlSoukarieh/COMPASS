@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "compass"
 version = "0.1.0"
 description = "Compass internal assistant scaffold"
-readme = "specs/001-compass/quickstart.md"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "alembic==1.14.0",

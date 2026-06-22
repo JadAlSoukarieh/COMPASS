@@ -60,7 +60,6 @@ worker/        RQ worker for async document ingestion
 frontend/      Templates and static assets
 data/seed/     Synthetic employees, users, leave balances, demo fixtures
 data/evals/    Golden evaluation dataset
-specs/         Product spec, plan, contracts, and task notes
 alembic/       Database migrations
 ```
 

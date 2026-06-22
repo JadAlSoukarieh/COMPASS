@@ -18,6 +18,7 @@ venv/
 node_modules/
 .claude/
 .specify/
+specs/
 spec-kit/
 model-cache/
 DEMO_SCRIPT.md

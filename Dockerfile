@@ -21,7 +21,6 @@ COPY backend /app/backend
 COPY data /app/data
 COPY worker /app/worker
 COPY ingestion /app/ingestion
-COPY specs /app/specs
 COPY vault_seed.sh /app/vault_seed.sh
 
 RUN python -m pip install --upgrade pip \
